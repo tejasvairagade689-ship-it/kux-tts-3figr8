@@ -1,20 +1,16 @@
 name: KUX TTS Audio Generation
 
 on:
-  push:
-    branches: [ main, master ]
-    paths:
-      - 'automation/tts-input.json'
   workflow_dispatch:
     inputs:
       voice:
-        description: 'Voice to use (e.g. "Show host (US, m)")'
+        description: 'Voice to use'
         required: false
         default: 'Show host (US, m)'
 
 jobs:
   generate-audio:
-    timeout-minutes: 60
+    timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -30,8 +26,8 @@ jobs:
       run: npx playwright install --with-deps chromium
 
     - name: Run TTS Automation
-      run: xvfb-run --server-args="-screen 0 1920x1080x24 -ac" --auto-servernum -- node automation/tts-recorder.js
-      timeout-minutes: 45
+      run: xvfb-run --server-args="-screen 0 1280x720x24 -ac" --auto-servernum -- node automation/tts-recorder.js
+      timeout-minutes: 20
       continue-on-error: true
 
     - name: Show Result
