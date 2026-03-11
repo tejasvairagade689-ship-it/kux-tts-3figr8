@@ -1,21 +1,34 @@
 /**
- * KUX TTS — Kyutai TTS 1.6B Playwright Automation (Parallel Worker Version)
- * 
- * Auto-chunks and generates audio using multiple tabs.
+ * KUX TTS — Kyutai TTS 1.6B Playwright Automation (Parallel Worker + Proxy Version)
  */
 
 import { chromium } from 'playwright';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import https from 'https';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const TTS_URL = 'https://kyutai.org/tts';
 const MAX_RETRIES = 2;
-const GENERATION_TIMEOUT_SEC = 120;
-const CONCURRENCY = 5;
+const GENERATION_TIMEOUT_SEC = 150; 
+const CONCURRENCY = 4; // 1 account par 4 tabs
+
+async function fetchFreeProxies() {
+    return new Promise((resolve) => {
+        // Simple proxy list fetch from common public source for safety
+        https.get('https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all', (res) => {
+            let data = '';
+            res.on('data', chunk => data += chunk);
+            res.on('end', () => {
+                const list = data.trim().split('\n').map(p => `http://${p.trim()}`);
+                resolve(list.length > 5 ? list : []);
+            });
+        }).on('error', () => resolve([]));
+    });
+}
 
 function readInput() {
     const inputFile = path.join(__dirname, 'tts-input.json');
@@ -38,15 +51,11 @@ async function findTTS16BSection(page) {
         window.scrollTo(0, document.body.scrollHeight / 2);
         return false;
     });
-
-    await page.waitForTimeout(1500);
-
+    await page.waitForTimeout(2000);
     const textareas = await page.$$('textarea[placeholder="Enter text..."]');
     const selects = await page.$$('select');
     const checkboxes = await page.$$('input[type="checkbox"]');
-
     const sectionIdx = textareas.length >= 2 ? 1 : 0;
-
     return {
         textarea: textareas[sectionIdx] || textareas[0],
         voiceSelect: selects[sectionIdx] || selects[0],
@@ -55,202 +64,138 @@ async function findTTS16BSection(page) {
     };
 }
 
-async function processPart(context, part, voice, downloadsDir) {
-    const page = await context.newPage();
+async function processPart(browser, part, voice, downloadsDir, proxyList) {
     let success = false;
+    const proxy = proxyList.length ? proxyList[Math.floor(Math.random() * proxyList.length)] : null;
+    
+    // Create NEW context per tab for better proxy isolation and clean state
+    const context = await browser.newContext({
+        proxy: proxy ? { server: proxy } : undefined,
+        viewport: { width: 1280, height: 720 },
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        acceptDownloads: true,
+    });
+    await context.addInitScript("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})");
 
-    console.log(`🎬 [Part ${part.id}] Started (${part.text.length} chars)`);
+    const page = await context.newPage();
+    console.log(`🎬 [Part ${part.id}] Started | Proxy: ${proxy || 'DIRECT'}`);
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-        if (attempt > 0) {
-            console.log(`   🔄 [Part ${part.id}] Retry #${attempt}...`);
-        }
+        if (attempt > 0) console.log(`   🔄 [Part ${part.id}] Retry #${attempt}...`);
         try {
             await page.goto(TTS_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
-            await page.waitForTimeout(3000);
-
-            try {
-                const consentBtn = page.locator('button:has-text("Accept"), button:has-text("OK"), button:has-text("Agree")');
-                if (await consentBtn.count() > 0) {
-                    await consentBtn.first().click();
-                    await page.waitForTimeout(1000);
-                }
-            } catch { }
+            await page.waitForTimeout(4000);
 
             const section = await findTTS16BSection(page);
-
+            
+            // 1. Tick "Show all voices"
             if (section.checkbox) {
                 const isChecked = await section.checkbox.isChecked();
                 if (!isChecked) {
                     await section.checkbox.click();
-                    await page.waitForTimeout(1000);
+                    await page.waitForTimeout(2000); // Give it time to load list
                 }
             }
 
+            // 2. Select Voice
             if (section.voiceSelect && voice) {
                 try {
                     await section.voiceSelect.selectOption({ label: voice });
+                    await page.waitForTimeout(500);
                 } catch {
-                    console.log(`   ⚠️ [Part ${part.id}] Voice error, using default`);
+                    console.log(`   ⚠️ [Part ${part.id}] Voice [${voice}] not found in dropdown yet, waiting...`);
+                    await page.waitForTimeout(2000);
+                    await section.voiceSelect.selectOption({ label: voice }).catch(() => {});
                 }
             }
 
-            await section.textarea.click();
-            await page.keyboard.press('Control+A');
-            await page.keyboard.press('Backspace');
-            await page.waitForTimeout(300);
+            // 3. Fill Text
             await section.textarea.fill(part.text);
 
+            // 4. Click Play
             const playButtons = await page.$$('button:has-text("Play")');
             const playBtn = playButtons[section.sectionIdx] || playButtons[0];
-
-            if (!playBtn) {
-                throw new Error("Play button not found");
-            }
-
+            if (!playBtn) throw new Error("Play button not found");
             await playBtn.click();
 
+            // 5. Wait for Generation
             const startTime = Date.now();
             let audioGenerated = false;
-
             while (Date.now() - startTime < GENERATION_TIMEOUT_SEC * 1000) {
-                const statusTexts = await page.$$eval('*', (elements) => {
-                    return elements
-                        .filter(el => el.textContent && (el.textContent.includes('Streaming') || el.textContent.includes('Connected')))
-                        .map(el => el.textContent.trim().substring(0, 50));
+                const status = await page.evaluate(() => {
+                    const texts = Array.from(document.querySelectorAll('*')).map(el => el.textContent).join(' ');
+                    return { streaming: texts.includes('Streaming'), connected: texts.includes('Connected') };
                 });
-
-                if (statusTexts.some(t => t.includes('Streaming'))) {
-                    if (!audioGenerated) audioGenerated = true;
-                }
-
-                if (audioGenerated) {
-                    const stillStreaming = statusTexts.some(t => t.includes('Streaming'));
-                    if (!stillStreaming) {
-                        break;
-                    }
-                }
-                await page.waitForTimeout(2000);
+                if (status.streaming) audioGenerated = true;
+                if (audioGenerated && !status.streaming) break;
+                await page.waitForTimeout(3000);
             }
 
+            // 6. Find Download Button (next to Play)
             const allBtns = await page.$$('button');
             let downloadBtn = null;
             let foundPlay = false;
-
             for (const btn of allBtns) {
                 const text = await btn.textContent().catch(() => '');
-                if (text.includes('Play')) {
-                    const box = await btn.boundingBox();
-                    const playBox = await playBtn.boundingBox();
-                    if (box && playBox && Math.abs(box.y - playBox.y) < 10) {
-                        foundPlay = true;
-                        continue;
-                    }
-                }
-                if (foundPlay) {
-                    downloadBtn = btn;
-                    break;
-                }
+                if (text.includes('Play')) { foundPlay = true; continue; }
+                if (foundPlay) { downloadBtn = btn; break; }
             }
 
             if (downloadBtn) {
-                const dl = page.waitForEvent('download', { timeout: 30000 }).catch(() => null);
+                const dlPromise = page.waitForEvent('download', { timeout: 30000 });
                 await downloadBtn.click();
-                const download = await dl;
+                const download = await dlPromise;
+                const filePath = path.join(downloadsDir, `part_${part.id}.wav`);
+                await download.saveAs(filePath);
+                console.log(`   💾 [Part ${part.id}] Saved (${voice})`);
+                success = true;
+                break;
+            } else throw new Error("Download button not found");
 
-                if (download) {
-                    const filePath = path.join(downloadsDir, `part_${part.id}.wav`);
-                    await download.saveAs(filePath);
-                    const stats = fs.statSync(filePath);
-                    const sizeKB = (stats.size / 1024).toFixed(1);
-                    console.log(`   💾 [Part ${part.id}] Saved (${sizeKB} KB)`);
-                    success = true;
-                    break;
-                } else {
-                    throw new Error("Download event didn't trigger");
-                }
-            } else {
-                throw new Error("Download button not found");
-            }
         } catch (err) {
             console.log(`   ❌ [Part ${part.id}] Error: ${err.message}`);
+            if (attempt === MAX_RETRIES) break;
         }
     }
 
-    if (!success) {
-        console.log(`   ❌ [Part ${part.id}] FAILED`);
-    }
-
-    await page.close();
+    await context.close();
     return success;
 }
 
 (async () => {
     const input = readInput();
-    const { parts, voice = 'Show host (US, m)', proxy } = input;
-
-    if (!parts || parts.length === 0) {
-        console.error('❌ No parts provided');
-        process.exit(1);
-    }
-
+    const { parts, voice = 'Show host (US, m)' } = input;
     const downloadsDir = path.join(__dirname, '..', 'downloads');
-    if (!fs.existsSync(downloadsDir)) {
-        fs.mkdirSync(downloadsDir, { recursive: true });
-    }
+    if (!fs.existsSync(downloadsDir)) fs.mkdirSync(downloadsDir, { recursive: true });
 
-    const launchOpts = {
-        headless: true,
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-gpu',
-            '--disable-dev-shm-usage',
-        ]
-    };
-    if (proxy) {
-        launchOpts.proxy = { server: proxy };
-    }
+    // Fetch proxies
+    console.log('🌐 Fetching fresh proxies...');
+    const proxies = await fetchFreeProxies();
+    console.log(`📡 Found ${proxies.length} potential proxies.`);
 
-    const browser = await chromium.launch(launchOpts);
-    const context = await browser.newContext({
-        viewport: { width: 1920, height: 1080 },
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        acceptDownloads: true,
-    });
-
-    await context.addInitScript("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})");
-
+    const browser = await chromium.launch({ headless: true });
+    
     let successCount = 0;
     let failCount = 0;
-
     const queue = [...parts];
     const workersCount = Math.min(queue.length, CONCURRENCY);
 
-    console.log(`🚀 Starting ${workersCount} parallel tabs to process ${parts.length} parts...`);
+    console.log(`🚀 Processing ${parts.length} parts with ${workersCount} parallel tabs...`);
 
     const workers = Array(workersCount).fill(0).map(async () => {
         while (queue.length > 0) {
             const part = queue.shift();
-            const ok = await processPart(context, part, voice, downloadsDir);
-            if (ok) successCount++;
-            else failCount++;
+            const ok = await processPart(browser, part, voice, downloadsDir, proxies);
+            if (ok) successCount++; else failCount++;
         }
     });
 
     await Promise.all(workers);
-
     await browser.close();
 
     const savedFiles = fs.readdirSync(downloadsDir).filter(f => f.endsWith('.wav'));
-
-    const resultFile = path.join(__dirname, 'tts-result.json');
-    fs.writeFileSync(resultFile, JSON.stringify({
-        totalParts: parts.length,
-        success: successCount,
-        failed: failCount,
-        files: savedFiles,
-        timestamp: new Date().toISOString(),
+    fs.writeFileSync(path.join(__dirname, 'tts-result.json'), JSON.stringify({
+        totalParts: parts.length, success: successCount, failed: failCount, files: savedFiles, timestamp: new Date().toISOString()
     }, null, 2));
 
     process.exit(failCount > 0 ? 1 : 0);
