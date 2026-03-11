@@ -1,5 +1,9 @@
 {
-    "text": "Hello, this is a test of the Kyutai TTS 1.6B model. The automation script is working correctly and generating audio from text.",
-    "voice": "Show host (US, m)",
-    "chunkSize": 500
+  "voice": "Jazz radio (US, m)",
+  "parts": [
+    {
+      "id": 5,
+      "text": "Tanha, that desperate craving to control what we cannot control, does not create safety. It creates fragility. The more you shield someone from impermanence, the more impermanence terrifies them. I am Kunal, and I have felt this exact pull — that urge to hold everything still, to keep the people I love small and close and safe, and then the slow painful realization that love sometimes means letting someone walk straight into the storm you survived."
+    }
+  ]
 }
