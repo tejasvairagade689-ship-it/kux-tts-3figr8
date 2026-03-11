@@ -1,0 +1,5 @@
+{
+    "text": "Hello, this is a test of the Kyutai TTS 1.6B model. The automation script is working correctly and generating audio from text.",
+    "voice": "Show host (US, m)",
+    "chunkSize": 500
+}
