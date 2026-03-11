@@ -99,6 +99,18 @@ async function processPart(page, part, voice, downloadsDir) {
                 if (text.trim() === 'Play') playBtn = btn;
             }
             if (!playBtn) throw new Error('Play button not found');
+
+            // Wait until connected (prevent clicking when "Disconnected" or "Not connected")
+            let isConnected = false;
+            for (let c = 0; c < 20; c++) {
+                const pt = await page.evaluate(() => document.body.innerText);
+                if (!pt.includes('Disconnected') && !pt.includes('Not connected')) {
+                    isConnected = true; break;
+                }
+                await page.waitForTimeout(1000);
+            }
+            if (!isConnected) throw new Error('WebSocket Disconnected or Not connected after 20s');
+
             await playBtn.click();
 
             // Wait for generation
@@ -106,6 +118,12 @@ async function processPart(page, part, voice, downloadsDir) {
             let audioStarted = false;
             while (Date.now() - startTime < GENERATION_TIMEOUT_SEC * 1000) {
                 const pageText = await page.evaluate(() => document.body.innerText);
+                
+                // If disconnected while waiting, fail fast instead of waiting 3 minutes
+                if (pageText.includes('Disconnected') || pageText.includes('Not connected')) {
+                    throw new Error('Connection lost during generation');
+                }
+
                 if (pageText.includes('Streaming')) { if (!audioStarted) { audioStarted = true; console.log(`   🔊 [Part ${part.id}] Streaming...`); } }
                 if (audioStarted && !pageText.includes('Streaming')) { console.log(`   ✅ [Part ${part.id}] Done!`); break; }
                 await page.waitForTimeout(3000);
@@ -201,6 +219,9 @@ async function processPart(page, part, voice, downloadsDir) {
 
     // Worker function - each tab processes from the queue
     const workers = pages.map((page, idx) => (async () => {
+        // Stagger the launch by 8 seconds per tab (important to prevent IP blocking/WebSocket throttling)
+        await new Promise(r => setTimeout(r, idx * 8000));
+        
         while (queue.length > 0) {
             const part = queue.shift();
             if (!part) break;
