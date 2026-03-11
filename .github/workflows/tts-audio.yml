@@ -32,15 +32,34 @@ jobs:
     - name: Run TTS Automation
       run: xvfb-run --server-args="-screen 0 1920x1080x24 -ac" --auto-servernum -- node automation/tts-recorder.js
       timeout-minutes: 45
+      continue-on-error: true
+
+    - name: Show Result
+      if: always()
+      run: |
+        echo "=== TTS Result ==="
+        cat automation/tts-result.json 2>/dev/null || echo "No result file"
+        echo ""
+        echo "=== Downloads ==="
+        ls -la downloads/ 2>/dev/null || echo "No downloads folder"
 
     - name: Upload Generated Audio
       if: always()
       uses: actions/upload-artifact@v4
       with:
         name: generated-audio
-        path: downloads/
+        path: downloads/*.wav
         retention-days: 1
         if-no-files-found: warn
+
+    - name: Upload Debug Screenshots
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: debug-screenshots
+        path: downloads/*.png
+        retention-days: 1
+        if-no-files-found: ignore
 
     - name: Upload Result JSON
       if: always()
