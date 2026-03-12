@@ -1,9 +1,13 @@
 {
-  "voice": "expresso/ex03-ex01_awe_001_channel1_1323s.wav",
+  "voice": "expresso/ex01-ex02_enunciated_001_channel1_432s.wav",
   "parts": [
     {
       "id": 5,
-      "text": "A proud lion laughed at a small mouse, but later,the trapped lion was saved when the mouse chewed thrugh his net. This classic tale teaches that even smal friends can be great allies and that kindness is nver wasted. True strength lies in helping others, no just being physically strong."
+      "text": "Tanha, that desperate craving to control what we cannot control, does not create safety. It creates fragility. The more you shield someone from impermanence, the more impermanence terrifies them. I am Kunal, and I have felt this exact pull — that urge to hold everything still, to keep the people I love small and close and safe, and then the slow painful realization that love sometimes means letting someone walk straight into the storm you survived."
+    },
+    {
+      "id": 11,
+      "text": "But when a trader shouted near her she did not flinch. She held his gaze and answered back. Vasuda hugged her daughter and felt something she did not expect — grief. Not because Meera was hurt but because the soft helpless girl she had built was gone, and this new Meera did not need the walls Vasuda had spent years perfecting. She gained a daughter who could survive. She lost the one who needed her completely."
     }
   ]
 }
