@@ -50,7 +50,7 @@ jobs:
         env:
           CHUNK_ID: ${{ matrix.chunk_id }}
           VOICE_NAME: ${{ github.event.inputs.voice_name || 'Show host (US, m)' }}
-          ACCOUNT_INDEX: ${{ matrix.chunk_id % 3 }}
+          ACCOUNT_INDEX: ${{ matrix.chunk_id }}
         run: |
           echo "Processing Chunk ID: $CHUNK_ID"
           xvfb-run --server-args="-screen 0 1280x800x24 -ac" --auto-servernum -- node automation/tts-recorder.js
