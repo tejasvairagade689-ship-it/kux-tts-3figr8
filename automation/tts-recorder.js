@@ -1,6 +1,12 @@
 /**
- * KUX TTS — Kyutai TTS 1.6B Playwright Automation
- * Dynamic Matrix Strategy: Single Job per Runner
+ * KUX TTS Recorder — Production (v2.0)
+ * Dropdown Selection + Multi-Part Processing + Headless
+ * 
+ * Reads tts-input.json:
+ * { "voice": "voice-donations/Andrea_(Spanish)_enhanced.wav", "parts": [{id:1, text:"..."}, ...] }
+ * 
+ * For each part → opens kyutai.org/tts → scrolls to 1.6B → checkbox → select voice → 
+ * clear text → add text → play → wait download → save as part_N.wav
  */
 
 import { chromium } from 'playwright';
@@ -13,333 +19,168 @@ const __dirname = path.dirname(__filename);
 
 const TTS_URL = 'https://kyutai.org/tts';
 const MAX_RETRIES = 3;
-const GENERATION_TIMEOUT_SEC = 240; // Increased for larger chunks
-const CHUNK_SIZE = 500;
 
-function getChunkInfo() {
-    const chunkId = parseInt(process.env.CHUNK_ID || '0', 10);
-    const inputFile = path.join(__dirname, '..', 'input.txt');
-    
-    if (!fs.existsSync(inputFile)) {
-        console.error('❌ input.txt not found!');
-        process.exit(1);
-    }
-    
-    const fullText = fs.readFileSync(inputFile, 'utf-8');
-    const start = chunkId * CHUNK_SIZE;
-    const end = start + CHUNK_SIZE;
-    const textChunk = fullText.substring(start, end).trim();
-    
-    return { id: chunkId, text: textChunk };
-}
+// ─── Read Input ───
+const inputPath = path.join(__dirname, 'tts-input.json');
+if (!fs.existsSync(inputPath)) { console.error('❌ tts-input.json not found!'); process.exit(1); }
 
-async function setupPage(page) {
-    console.log('🌐 Loading Kyutai TTS...');
-    await page.goto(TTS_URL, { waitUntil: 'networkidle', timeout: 90000 });
-    await page.waitForTimeout(5000);
+const input = JSON.parse(fs.readFileSync(inputPath, 'utf-8'));
+const voice = input.voice || 'Show host (US, m)';
+const parts = input.parts || [];
 
-    // Dismiss consent
-    try {
-        const btn = page.locator('button:has-text("Accept"), button:has-text("OK"), button:has-text("I agree")');
-        if (await btn.count() > 0) { 
-            await btn.first().click(); 
-            await page.waitForTimeout(1000); 
-        }
-    } catch {}
+if (!parts.length) { console.error('❌ No parts in tts-input.json!'); process.exit(1); }
 
-    // Scroll to 1.6B section
-    await page.evaluate(() => {
-        const elements = document.querySelectorAll('h1, h2, h3, h4, x-gradio-component');
-        for (const el of elements) {
-            if (el.textContent && el.textContent.includes('1.6B')) {
-                el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                return;
-            }
-        }
-    });
-    await page.waitForTimeout(2000);
+const downloadsDir = path.join(__dirname, '..', 'downloads');
+if (!fs.existsSync(downloadsDir)) fs.mkdirSync(downloadsDir, { recursive: true });
 
-    // Get elements using more robust selectors
-    const textareas = await page.$$('textarea');
-    const selects = await page.$$('select');
-    const checkboxes = await page.$$('input[type="checkbox"]');
-    
-    // Kyutai usually has 7B first, then 1.6B
-    const sectionIdx = textareas.length >= 2 ? 1 : 0;
+// Check if voice needs "Show all voices" checkbox (custom/repo voices)
+const needsShowAll = voice.includes('/') || voice.includes('voice-donations') || voice.includes('expresso');
 
-    // "Show all voices" checkbox - usually the first or second
-    for (const cb of checkboxes) {
-        try {
-            const label = await page.evaluate(el => el.parentElement?.innerText, cb);
-            if (label && label.includes('Show')) {
-                if (!(await cb.isChecked())) { 
-                    await cb.click(); 
-                    await page.waitForTimeout(2000); 
-                }
-            }
-        } catch {}
-    }
-
-    return {
-        textarea: textareas[sectionIdx] || textareas[0],
-        voiceSelect: selects[sectionIdx] || selects[0]
-    };
-}
-
-async function generateAudio(page, part, voice, downloadsDir) {
-    console.log(`🎬 [Job ${part.id}] Processing chunk (${part.text.length} chars)`);
-    if (!part.text) {
-        console.warn(`⚠️ [Job ${part.id}] Text is empty, skipping.`);
-        return true; 
-    }
-
-    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-        try {
-            const ui = await setupPage(page);
-            if (!ui.textarea) throw new Error('Textarea for 1.6B not found');
-
-            // Select voice
-            if (ui.voiceSelect && voice) {
-                console.log(`   🎤 Selecting voice: ${voice}`);
-                await ui.voiceSelect.selectOption({ label: voice }).catch(async () => {
-                    await ui.voiceSelect.selectOption(voice);
-                });
-                await page.waitForTimeout(1000);
-            }
-
-            // Fill text with interaction
-            await ui.textarea.click();
-            await ui.textarea.fill(part.text);
-            await page.waitForTimeout(1000);
-
-            // Find Play button - search specifically within the 1.6B context if possible
-            const allBtns = await page.$$('button');
-            let playBtn = null;
-            for (const btn of allBtns) {
-                const text = await btn.textContent();
-                // Match "Play" exactly to avoid clicking "Stop" or "Download"
-                if (text && text.trim() === 'Play') {
-                    // Check if it's in the 1.6B section (after our textarea)
-                    const box = await btn.boundingBox();
-                    const areaBox = await ui.textarea.boundingBox();
-                    if (box && areaBox && box.y > areaBox.y) {
-                        playBtn = btn;
-                        break;
-                    }
-                }
-            }
-            if (!playBtn) throw new Error('Play button not found');
-
-            // Wait for connection - with reload fallback
-            let connected = false;
-            for (let i = 0; i < 30; i++) {
-                const t = await page.evaluate(() => document.body.innerText);
-                if (!t.includes('Disconnected') && !t.includes('Not connected')) {
-                    connected = true;
-                    break;
-                }
-                // Try clicking Play anyway later to force connection
-                if (i === 15) {
-                    console.log('   🔄 Still not connected, reloading once...');
-                    await page.reload({ waitUntil: 'networkidle' });
-                    return await generateAudio(page, part, voice, downloadsDir); // Recursive retry
-                }
-                await page.waitForTimeout(1000);
-            }
-
-            console.log(`   ▶️ Clicking Play...`);
-            await playBtn.click();
-
-            // Wait for "Streaming" or Completion
-            const start = Date.now();
-            let streamingStarted = false;
-            let success = false;
-            
-            while (Date.now() - start < GENERATION_TIMEOUT_SEC * 1000) {
-                const t = await page.evaluate(() => document.body.innerText);
-                
-                if (t.includes('Disconnected')) throw new Error('Connection lost during generation');
-                
-                if (t.includes('Streaming')) {
-                    if (!streamingStarted) {
-                        streamingStarted = true;
-                        console.log(`   🔊 Streaming started...`);
-                    }
-                } else {
-                    // If we were streaming and it stopped, it's likely done
-                    // Or if we see the audio element has a duration
-                    const hasAudio = await page.evaluate(() => {
-                        const audios = document.querySelectorAll('audio');
-                        for (const a of audios) {
-                            if (a.duration > 0 && !a.paused) return true;
-                            if (a.src && a.src.startsWith('blob:') && a.duration > 0) return true;
-                        }
-                        return false;
-                    });
-                    
-                    if (streamingStarted || hasAudio) {
-                        console.log(`   ✅ Generation complete.`);
-                        success = true;
-                        break;
-                    }
-                }
-                await page.waitForTimeout(3000);
-            }
-
-            if (!success) throw new Error('Generation timed out or failed to start');
-            await page.waitForTimeout(5000); // Wait for final buffer
-
-            // Robust Download Handling
-            console.log(`   📥 Attempting download...`);
-            
-            // Try to find the download button near the Play button
-            const btns = await page.$$('button');
-            let downloadBtn = null;
-            let foundPlay = false;
-            for (const btn of btns) {
-                const text = await btn.textContent();
-                if (text && text.trim() === 'Play') { foundPlay = true; continue; }
-                // Usually the button after Play is Download or has a download icon
-                if (foundPlay) {
-                    const isVisible = await btn.isVisible();
-                    if (isVisible) {
-                        downloadBtn = btn; 
-                        break; 
-                    }
-                }
-            }
-
-            if (downloadBtn) {
-                try {
-                    const [download] = await Promise.all([
-                        page.waitForEvent('download', { timeout: 45000 }),
-                        downloadBtn.click()
-                    ]);
-                    const filePath = path.join(downloadsDir, `chunk_${part.id}.wav`);
-                    await download.saveAs(filePath);
-                    console.log(`   💾 Saved: chunk_${part.id}.wav`);
-                    return true;
-                } catch (e) {
-                    console.warn(`   ⚠️ Download button click failed: ${e.message}, trying fallback...`);
-                }
-            }
-
-            // Fallback: Direct Blob Extraction
-            console.log(`   🧩 Fallback: Extracting audio blob...`);
-            const audioSrc = await page.evaluate(() => {
-                const audios = document.querySelectorAll('audio');
-                // Pick the one with a blob src and duration
-                for (const a of audios) {
-                    if (a.src && a.src.startsWith('blob:') && a.duration > 0) return a.src;
-                }
-                return audios[0]?.src || null;
-            });
-
-            if (audioSrc && audioSrc.startsWith('blob:')) {
-                const data = await page.evaluate(async (src) => {
-                    const r = await fetch(src);
-                    const b = await r.blob();
-                    return new Promise(res => {
-                        const reader = new FileReader();
-                        reader.onloadend = () => res(reader.result);
-                        reader.readAsDataURL(b);
-                    });
-                }, audioSrc);
-                const buffer = Buffer.from(data.split(',')[1], 'base64');
-                fs.writeFileSync(path.join(downloadsDir, `chunk_${part.id}.wav`), buffer);
-                console.log(`   💾 Saved via blob: chunk_${part.id}.wav`);
-                return true;
-            }
-
-            throw new Error('Could not capture audio output');
-
-        } catch (err) {
-            console.error(`   ❌ Attempt ${attempt} failed: ${err.message}`);
-            if (attempt === MAX_RETRIES) {
-                await page.screenshot({ path: path.join(downloadsDir, `error_job${part.id}.png`), fullPage: true });
-            }
-            await page.waitForTimeout(5000);
-        }
-    }
-    return false;
-}
+console.log(`🚀 KUX TTS Recorder v2.0`);
+console.log(`🎤 Voice: ${voice}`);
+console.log(`📦 Parts: ${parts.length}`);
+console.log(`📁 Output: ${downloadsDir}`);
+console.log(`☑️  Show All Voices: ${needsShowAll ? 'YES' : 'NO'}`);
+console.log('');
 
 (async () => {
-    const part = getChunkInfo();
-    const voice = process.env.VOICE_NAME || 'Show host (US, m)';
-    
-    const downloadsDir = path.join(__dirname, '..', 'downloads');
-    if (!fs.existsSync(downloadsDir)) fs.mkdirSync(downloadsDir, { recursive: true });
-
-    console.log(`🚀 KUX WORKER | Job ID: ${part.id} | Voice: ${voice}`);
-
-    const browser = await chromium.launch({ 
-        headless: true,
-        args: [
-            '--disable-dev-shm-usage', 
-            '--no-sandbox',
-            '--disable-web-security',
-            '--disable-features=IsolateOrigins,site-per-process'
-        ] 
-    });
-    
+    const isCI = process.env.CI === 'true' || process.env.GITHUB_ACTIONS === 'true';
+    const browser = await chromium.launch({ headless: isCI });
     const context = await browser.newContext({ 
-        acceptDownloads: true,
-        viewport: { width: 1280, height: 800 },
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+        acceptDownloads: true, 
+        viewport: { width: 1400, height: 900 } 
     });
     
-    const page = await context.newPage();
+    let successCount = 0;
+    let failCount = 0;
 
-    // Jugaad 2: API Interception Logic
-    // Detects the /tts request and forces the target voice ID in the multipart form data
-    await page.route('**/tts', async (route) => {
-        const request = route.request();
-        if (request.method() === 'POST') {
-            let postData = request.postData();
-            if (postData && postData.includes('name="voice_url"')) {
-                try {
-                    console.log(`   🛠️ [Jugaad 2] Intercepting request to: ${request.url()}`);
-                    
-                    // Find boundary to parse multipart accurately
-                    const boundaryMatch = postData.match(/^--[^\r\n]+/);
-                    if (boundaryMatch) {
-                        const boundary = boundaryMatch[0];
-                        const parts = postData.split(boundary);
-                        
-                        const modifiedParts = parts.map(p => {
-                            if (p.includes('name="voice_url"')) {
-                                return p.replace(/(\r?\n\r?\n)[\s\S]*?(\r?\n)$/, "$1" + voice + "$2");
-                            }
-                            return p;
-                        });
-                        
-                        const modifiedData = modifiedParts.join(boundary);
-                        console.log(`   ✅ [Jugaad 2] INTERCEPT SUCCESS! Forced voice: ${voice}`);
-                        await route.continue({ postData: modifiedData });
-                        return;
+    for (const part of parts) {
+        let success = false;
+        
+        for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+            try {
+                console.log(`🎬 [Part ${part.id}] Attempt ${attempt}/${MAX_RETRIES} — "${part.text.substring(0, 50)}..."`);
+                
+                const page = await context.newPage();
+                
+                // Step 1: Navigate
+                await page.goto(TTS_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
+                await page.waitForTimeout(3000);
+                
+                // Step 2: Scroll to 1.6B section
+                await page.evaluate(() => window.scrollBy(0, 700));
+                await page.waitForTimeout(1500);
+
+                // Step 3: Click "Show all voices" checkbox if needed
+                if (needsShowAll) {
+                    const checkbox = page.locator('input[type="checkbox"]').nth(1);
+                    if (await checkbox.count() > 0) {
+                        await checkbox.check();
+                        await page.waitForTimeout(2000);
                     }
-                } catch (err) {
-                    console.error(`   ⚠️ [Jugaad 2] Interception failed: ${err.message}`);
+                }
+
+                // Step 4: Select voice from dropdown
+                const voiceSelect = page.locator('select').nth(1);
+                if (await voiceSelect.count() > 0) {
+                    await voiceSelect.selectOption(voice);
+                    await page.waitForTimeout(500);
+                }
+                
+                // Step 5: Clear existing text + fill our text
+                const textareas = await page.$$('textarea');
+                const textarea = textareas[textareas.length - 1];
+                if (!textarea) throw new Error('Textarea not found!');
+
+                await textarea.click();
+                await textarea.evaluate(el => { 
+                    el.value = ''; 
+                    el.dispatchEvent(new Event('input', { bubbles: true })); 
+                });
+                await textarea.fill(part.text);
+                await page.waitForTimeout(500);
+
+                // Step 6: Click Play button (last one = 1.6B section)
+                const playButtons = await page.$$('button');
+                let playBtn = null;
+                for (const btn of playButtons) {
+                    const text = await btn.textContent().catch(() => '');
+                    if (text.trim() === 'Play') playBtn = btn;
+                }
+                if (!playBtn) throw new Error('Play button not found!');
+                
+                const playBox = await playBtn.boundingBox();
+                await playBtn.click();
+                console.log(`   ▶️  Play clicked!`);
+
+                // Step 7: Wait for download button + click it
+                const startTime = Date.now();
+                let downloaded = false;
+
+                while (Date.now() - startTime < 180000) { // 3 min max
+                    const allBtns = await page.$$('button');
+                    let downloadBtn = null;
+                    
+                    for (const btn of allBtns) {
+                        const txt = await btn.textContent().catch(() => '');
+                        if (txt.trim() === 'Play') continue;
+                        const rect = await btn.boundingBox();
+                        if (rect && playBox && 
+                            rect.x > playBox.x && 
+                            rect.x < (playBox.x + 150) && 
+                            Math.abs(rect.y - playBox.y) < 15) {
+                            downloadBtn = btn;
+                            break;
+                        }
+                    }
+
+                    if (downloadBtn) {
+                        try {
+                            const [dl] = await Promise.all([
+                                page.waitForEvent('download', { timeout: 15000 }),
+                                downloadBtn.click()
+                            ]);
+                            const fp = path.join(downloadsDir, `part_${part.id}.wav`);
+                            await dl.saveAs(fp);
+                            const sz = fs.statSync(fp).size;
+                            console.log(`   ✅ Saved: part_${part.id}.wav (${(sz / 1024).toFixed(1)} KB)`);
+                            downloaded = true;
+                            break;
+                        } catch {
+                            // Download not ready yet, keep polling
+                        }
+                    }
+                    
+                    await page.waitForTimeout(1000);
+                }
+
+                if (!downloaded) throw new Error('Download timed out after 3 minutes');
+                
+                await page.close();
+                success = true;
+                successCount++;
+                break; // Exit retry loop
+                
+            } catch (err) {
+                console.log(`   ❌ Attempt ${attempt} failed: ${err.message}`);
+                if (attempt === MAX_RETRIES) {
+                    console.log(`   ⛔ Part ${part.id} FAILED after ${MAX_RETRIES} attempts!`);
+                    failCount++;
+                } else {
+                    console.log(`   🔄 Retrying in 5s...`);
+                    await new Promise(r => setTimeout(r, 5000));
                 }
             }
         }
-        await route.continue();
-    });
-
-    const ok = await generateAudio(page, part, voice, downloadsDir);
+    }
 
     await browser.close();
-
-    const result = {
-        jobId: part.id,
-        success: ok,
-        file: ok ? `chunk_${part.id}.wav` : null,
-        timestamp: new Date().toISOString()
-    };
     
-    fs.writeFileSync(path.join(__dirname, `result_job${part.id}.json`), JSON.stringify(result, null, 2));
-
-    console.log(`\n🏁 JOB ${part.id} ${ok ? 'PASSED' : 'FAILED'}`);
-    process.exit(ok ? 0 : 1);
+    console.log('');
+    console.log('═══════════════════════════════════');
+    console.log(`✅ Success: ${successCount}/${parts.length}`);
+    console.log(`❌ Failed:  ${failCount}/${parts.length}`);
+    console.log('═══════════════════════════════════');
+    
+    process.exit(failCount > 0 ? 1 : 0);
 })();
