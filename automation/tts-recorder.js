@@ -309,15 +309,7 @@ async function generateAudio(page, part, voice, downloadsDir) {
                         
                         const modifiedParts = parts.map(p => {
                             if (p.includes('name="voice_url"')) {
-                                // Multipart parts usually look like:
-                                // \r\nContent-Disposition: form-data; name="voice_url"\r\n\r\n[VALUE]\r\n
-                                const subParts = p.split('\r\n\r\n');
-                                if (subParts.length >= 2) {
-                                    // subParts[1] contains the value and the trailing \r\n
-                                    // We replace the value but keep a trailing \r\n if it was there
-                                    subParts[1] = voice + (subParts[1].endsWith('\r\n') ? '\r\n' : '');
-                                    return subParts.join('\r\n\r\n');
-                                }
+                                return p.replace(/(\r?\n\r?\n)[\s\S]*?(\r?\n)$/, "$1" + voice + "$2");
                             }
                             return p;
                         });
