@@ -11,7 +11,7 @@ on:
 jobs:
   generate:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -22,10 +22,19 @@ jobs:
         with:
           node-version: 22
 
+      # Fix ESM module warning
+      - name: Setup package.json
+        run: |
+          if [ ! -f package.json ]; then
+            echo '{"type":"module","private":true}' > package.json
+          else
+            node -e "const p=require('./package.json'); p.type='module'; require('fs').writeFileSync('package.json',JSON.stringify(p,null,2))"
+          fi
+
       - name: Install dependencies
         run: npm install playwright
 
-      # ═══ PLAYWRIGHT CACHE — saves ~400MB download each run ═══
+      # ═══ PLAYWRIGHT CACHE ═══
       - name: Get Playwright version
         id: pw-version
         run: echo "version=$(npx playwright --version | tr ' ' '-')" >> $GITHUB_OUTPUT
@@ -37,16 +46,16 @@ jobs:
           path: ~/.cache/ms-playwright
           key: pw-${{ runner.os }}-${{ steps.pw-version.outputs.version }}
 
-      - name: Install Playwright browsers (cache miss)
+      - name: Install Playwright (cache miss)
         if: steps.playwright-cache.outputs.cache-hit != 'true'
         run: npx playwright install chromium --with-deps
 
-      - name: Install system deps only (cache hit)
+      - name: Install system deps (cache hit)
         if: steps.playwright-cache.outputs.cache-hit == 'true'
         run: npx playwright install-deps chromium
       # ═══ END CACHE ═══
 
-      - name: Run TTS Recorder
+      - name: Run TTS Recorder v3.0
         run: node automation/tts-recorder.js
         env:
           CI: true
