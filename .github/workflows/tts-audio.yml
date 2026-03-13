@@ -1,0 +1,61 @@
+name: generate-audio
+
+on:
+  workflow_dispatch:
+    inputs:
+      voice:
+        description: 'Voice ID for TTS'
+        required: false
+        default: 'Show host (US, m)'
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm install playwright
+
+      # ═══ PLAYWRIGHT CACHE — saves ~400MB download each run ═══
+      - name: Get Playwright version
+        id: pw-version
+        run: echo "version=$(npx playwright --version | tr ' ' '-')" >> $GITHUB_OUTPUT
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        id: playwright-cache
+        with:
+          path: ~/.cache/ms-playwright
+          key: pw-${{ runner.os }}-${{ steps.pw-version.outputs.version }}
+
+      - name: Install Playwright browsers (cache miss)
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: npx playwright install chromium --with-deps
+
+      - name: Install system deps only (cache hit)
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
+      # ═══ END CACHE ═══
+
+      - name: Run TTS Recorder
+        run: node automation/tts-recorder.js
+        env:
+          CI: true
+
+      - name: Upload generated audio
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: generated-audio
+          path: downloads/*.wav
+          if-no-files-found: warn
+          retention-days: 7
