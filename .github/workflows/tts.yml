@@ -1,0 +1,99 @@
+name: TTS Audio Generator (API Direct)
+
+on:
+  push:
+    paths:
+      - 'input.txt'
+  workflow_dispatch:
+    inputs:
+      voice_name:
+        description: 'Voice ID (e.g., alba, aura, or full path)'
+        required: true
+        default: 'alba'
+
+jobs:
+  analyze-text:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - id: set-matrix
+        run: |
+          echo "matrix=$(python3 setup_jobs.py)" >> $GITHUB_OUTPUT
+
+  generate-audio:
+    needs: analyze-text
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        chunk_id: ${{ fromJson(needs.analyze-text.outputs.matrix) }}
+    
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract text chunk
+        run: |
+          python3 extract_chunk.py ${{ matrix.chunk_id }} > my_chunk.txt
+          echo "Chunk ${{ matrix.chunk_id }} extracted."
+
+      - name: Generate audio via direct API call
+        run: |
+          mkdir -p downloads
+          VOICE_ID="${{ github.event.inputs.voice_name || 'alba' }}"
+          
+          # Direct curl call - Using the discovered API endpoint
+          curl -X POST \
+            "https://kyutaipockettts6ylex2y4-kyutai-pocket-tts.functions.fnc.fr-par.scw.cloud/tts" \
+            -F "text=<my_chunk.txt" \
+            -F "voice_url=$VOICE_ID" \
+            --max-time 180 \
+            --retry 5 \
+            --retry-delay 10 \
+            -o "downloads/chunk_${{ matrix.chunk_id }}.wav"
+          
+          # Verify file
+          if [ -s "downloads/chunk_${{ matrix.chunk_id }}.wav" ]; then
+            echo "✅ Audio generated successfully for chunk ${{ matrix.chunk_id }}"
+          else
+            echo "❌ Audio file is empty or missing!"
+            exit 1
+          fi
+
+      - name: Upload audio artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: audio-chunk-${{ matrix.chunk_id }}
+          path: downloads/*.wav
+          retention-days: 2
+
+  merge-audio:
+    needs: generate-audio
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - name: Download all audio chunks
+        uses: actions/download-artifact@v4
+        with:
+          pattern: audio-chunk-*
+          merge-multiple: true
+          path: all_audio/
+
+      - name: List files
+        run: ls -la all_audio/
+
+      - name: Upload final package
+        uses: actions/upload-artifact@v4
+        with:
+          name: all-tts-audio
+          path: all_audio/
+          retention-days: 5
