@@ -107,7 +107,8 @@ async function generateAudio(page, part, voice, downloadsDir) {
                 await page.waitForTimeout(1000);
             }
 
-            // Fill text
+            // Fill text with interaction
+            await ui.textarea.click();
             await ui.textarea.fill(part.text);
             await page.waitForTimeout(1000);
 
@@ -118,26 +119,33 @@ async function generateAudio(page, part, voice, downloadsDir) {
                 const text = await btn.textContent();
                 // Match "Play" exactly to avoid clicking "Stop" or "Download"
                 if (text && text.trim() === 'Play') {
-                    playBtn = btn;
-                    // We want the Play button after the textarea we filled
+                    // Check if it's in the 1.6B section (after our textarea)
                     const box = await btn.boundingBox();
                     const areaBox = await ui.textarea.boundingBox();
-                    if (box && areaBox && box.y > areaBox.y) break; 
+                    if (box && areaBox && box.y > areaBox.y) {
+                        playBtn = btn;
+                        break;
+                    }
                 }
             }
             if (!playBtn) throw new Error('Play button not found');
 
-            // Wait for connection
+            // Wait for connection - with reload fallback
             let connected = false;
-            for (let i = 0; i < 45; i++) {
+            for (let i = 0; i < 30; i++) {
                 const t = await page.evaluate(() => document.body.innerText);
                 if (!t.includes('Disconnected') && !t.includes('Not connected')) {
                     connected = true;
                     break;
                 }
+                // Try clicking Play anyway later to force connection
+                if (i === 15) {
+                    console.log('   🔄 Still not connected, reloading once...');
+                    await page.reload({ waitUntil: 'networkidle' });
+                    return await generateAudio(page, part, voice, downloadsDir); // Recursive retry
+                }
                 await page.waitForTimeout(1000);
             }
-            if (!connected) throw new Error('Kyutai server not connected');
 
             console.log(`   ▶️ Clicking Play...`);
             await playBtn.click();
@@ -267,12 +275,18 @@ async function generateAudio(page, part, voice, downloadsDir) {
 
     const browser = await chromium.launch({ 
         headless: true,
-        args: ['--disable-dev-shm-usage', '--no-sandbox'] 
+        args: [
+            '--disable-dev-shm-usage', 
+            '--no-sandbox',
+            '--disable-web-security',
+            '--disable-features=IsolateOrigins,site-per-process'
+        ] 
     });
     
     const context = await browser.newContext({ 
         acceptDownloads: true,
-        viewport: { width: 1280, height: 800 }
+        viewport: { width: 1280, height: 800 },
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
     });
     
     const page = await context.newPage();
