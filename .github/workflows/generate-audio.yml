@@ -1,6 +1,8 @@
 name: KUX TTS - Dynamic Matrix Strategy
 
 on:
+  push:
+    branches: [ main ]
   workflow_dispatch:
     inputs:
       voice_name:
@@ -23,7 +25,7 @@ jobs:
         run: |
           echo "matrix=$(python3 setup_jobs.py)" >> $GITHUB_OUTPUT
 
-  generate-voice:
+  generate-audio:
     needs: analyze-text
     runs-on: ubuntu-latest
     strategy:
@@ -47,9 +49,8 @@ jobs:
       - name: Run TTS Worker
         env:
           CHUNK_ID: ${{ matrix.chunk_id }}
-          VOICE_NAME: ${{ github.event.inputs.voice_name }}
-          # Account rotation logic: Use Account ID based on chunk (0 to 5)
-          ACCOUNT_INDEX: ${{ matrix.chunk_id % 6 }}
+          VOICE_NAME: ${{ github.event.inputs.voice_name || 'Show host (US, m)' }}
+          ACCOUNT_INDEX: ${{ matrix.chunk_id % 3 }}
         run: |
           echo "Processing Chunk ID: $CHUNK_ID"
           xvfb-run --server-args="-screen 0 1280x800x24 -ac" --auto-servernum -- node automation/tts-recorder.js
@@ -62,11 +63,21 @@ jobs:
           retention-days: 1
           if-no-files-found: ignore
 
-      - name: Upload Error Screenshots
+      - name: Upload Result JSON
+        uses: actions/upload-artifact@v4
+        with:
+          name: job-result-${{ matrix.chunk_id }}
+          path: automation/result_job*.json
+          retention-days: 1
+          if-no-files-found: ignore
+
+      - name: Upload Error Data
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: error-screens-${{ matrix.chunk_id }}
-          path: downloads/*.png
+          name: error-debug-${{ matrix.chunk_id }}
+          path: |
+            downloads/*.png
+            automation/result_job*.json
           retention-days: 1
           if-no-files-found: ignore
