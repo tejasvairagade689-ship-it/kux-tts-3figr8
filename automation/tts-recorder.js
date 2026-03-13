@@ -277,6 +277,50 @@ async function generateAudio(page, part, voice, downloadsDir) {
     
     const page = await context.newPage();
 
+    // Jugaad 2: API Interception Logic
+    // Detects the /tts request and forces the target voice ID in the multipart form data
+    await page.route('**/tts', async (route) => {
+        const request = route.request();
+        if (request.method() === 'POST') {
+            let postData = request.postData();
+            if (postData && postData.includes('name="voice_url"')) {
+                try {
+                    console.log(`   🛠️ [Jugaad 2] Intercepting network request to force voice...`);
+                    
+                    // Find boundary to parse multipart accurately
+                    const boundaryMatch = postData.match(/^--[^\r\n]+/);
+                    if (boundaryMatch) {
+                        const boundary = boundaryMatch[0];
+                        const parts = postData.split(boundary);
+                        
+                        const modifiedParts = parts.map(p => {
+                            if (p.includes('name="voice_url"')) {
+                                // Multipart parts usually look like:
+                                // \r\nContent-Disposition: form-data; name="voice_url"\r\n\r\n[VALUE]\r\n
+                                const subParts = p.split('\r\n\r\n');
+                                if (subParts.length >= 2) {
+                                    // subParts[1] contains the value and the trailing \r\n
+                                    // We replace the value but keep a trailing \r\n if it was there
+                                    subParts[1] = voice + (subParts[1].endsWith('\r\n') ? '\r\n' : '');
+                                    return subParts.join('\r\n\r\n');
+                                }
+                            }
+                            return p;
+                        });
+                        
+                        const modifiedData = modifiedParts.join(boundary);
+                        console.log(`   ✅ [Jugaad 2] INTERCEPT SUCCESS! Forced voice: ${voice}`);
+                        await route.continue({ postData: modifiedData });
+                        return;
+                    }
+                } catch (err) {
+                    console.error(`   ⚠️ [Jugaad 2] Interception failed: ${err.message}`);
+                }
+            }
+        }
+        await route.continue();
+    });
+
     const ok = await generateAudio(page, part, voice, downloadsDir);
 
     await browser.close();
