@@ -285,7 +285,7 @@ async function generateAudio(page, part, voice, downloadsDir) {
             let postData = request.postData();
             if (postData && postData.includes('name="voice_url"')) {
                 try {
-                    console.log(`   🛠️ [Jugaad 2] Intercepting network request to force voice...`);
+                    console.log(`   🛠️ [Jugaad 2] Intercepting request to: ${request.url()}`);
                     
                     // Find boundary to parse multipart accurately
                     const boundaryMatch = postData.match(/^--[^\r\n]+/);
