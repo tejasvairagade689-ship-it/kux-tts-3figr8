@@ -1,0 +1,2 @@
+Bhai, yaha apna lamba text paste kar do. Ye system apne aap is text ko 500 characters ke chunks mein tod dega aur parallel mein process karega. 
+Kyutai TTS 1.6B model bahut fast hai, aur dynamic matrix strategy se hum maximum efficiency nikalenge.
