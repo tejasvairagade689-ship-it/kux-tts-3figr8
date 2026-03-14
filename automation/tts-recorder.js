@@ -80,44 +80,42 @@ console.log('');
             }
         }
         
-        await page.waitForTimeout(3000);
+        await page.waitForTimeout(4000);
         
-        // Scroll to 1.6B section specifically
-        try {
-            const heading = page.locator('text=Kyutai TTS 1.6B').first();
-            await heading.scrollIntoViewIfNeeded();
-            await page.waitForTimeout(1000);
-        } catch {
-            await page.evaluate(() => window.scrollBy(0, 700));
-            await page.waitForTimeout(1000);
-        }
+        // ══ Find the specific container for Kyutai 1.6B ══
+        const section16B = page.locator('div.gradio-column, div.gradio-block').filter({ has: page.locator('h2', { hasText: 'Kyutai TTS 1.6B' }) }).first();
+        await section16B.scrollIntoViewIfNeeded();
+        await page.waitForTimeout(1000);
         
-        // Checkbox
+        // Checkbox: inside 1.6B section
         if (needsShowAll) {
-            const checkbox = page.locator('input[type="checkbox"]').nth(1);
+            const checkbox = section16B.locator('input[type="checkbox"]').first();
             if (await checkbox.count() > 0) {
-                await checkbox.check();
-                await page.waitForTimeout(1500);
+                const isChecked = await checkbox.isChecked();
+                if (!isChecked) {
+                    await checkbox.check();
+                    await page.waitForTimeout(2000);
+                }
             }
         }
         
-        // Select voice
-        const voiceSelect = page.locator('select').nth(1);
+        // Select voice: inside 1.6B section
+        const voiceSelect = section16B.locator('select').first();
         if (await voiceSelect.count() > 0) {
             await voiceSelect.selectOption(voice);
             await page.waitForTimeout(500);
         }
         
-        console.log('✅ Page setup complete (voice selected, checkbox checked)');
-        return page;
+        console.log('✅ Page setup complete (1.6B section scoped)');
+        return { page, section16B };
     }
     
     // ═══════════════════════════════════
     // PROCESS SINGLE PART (on existing page)
     // ═══════════════════════════════════
-    async function processPart(page, part) {
-        // Clear + fill text — nth(1) = 2nd textarea = 1.6B section
-        const textarea = page.locator('textarea').nth(1);
+    async function processPart(page, part, section16B) {
+        // Textarea: inside 1.6B section
+        const textarea = section16B.locator('textarea').first();
         if (await textarea.count() === 0) throw new Error('1.6B Textarea not found!');
         
         await textarea.click();
@@ -125,19 +123,13 @@ console.log('');
             el.value = ''; 
             el.dispatchEvent(new Event('input', { bubbles: true })); 
         });
-        await page.waitForTimeout(200);
-        await textarea.fill(part.text);
         await page.waitForTimeout(300);
+        await textarea.fill(part.text);
+        await page.waitForTimeout(500);
         
-        // Find Play button — 2nd Play button = 1.6B section
-        const allButtons = await page.$$('button');
-        const playBtns = [];
-        for (const btn of allButtons) {
-            const text = await btn.textContent().catch(() => '');
-            if (text.trim() === 'Play') playBtns.push(btn);
-        }
-        const playBtn = playBtns.length >= 2 ? playBtns[1] : playBtns[playBtns.length - 1];
-        if (!playBtn) throw new Error('1.6B Play button not found!');
+        // Play button: inside 1.6B section
+        const playBtn = section16B.locator('button', { hasText: 'Play' }).first();
+        if (await playBtn.count() === 0) throw new Error('1.6B Play button not found!');
         
         const playBox = await playBtn.boundingBox();
         if (!playBox) throw new Error('Play button not visible!');
@@ -211,7 +203,9 @@ console.log('');
         // Setup or reuse page
         if (!page || page.isClosed()) {
             try {
-                page = await setupPage();
+                const setup = await setupPage();
+                page = setup.page;
+                page.section16B = setup.section16B;
             } catch (e) {
                 console.log(`❌ Page setup failed: ${e.message}. Retrying in 10s...`);
                 await new Promise(r => setTimeout(r, 10000));
@@ -228,7 +222,7 @@ console.log('');
             console.log(`🎬 [Part ${part.id}] Attempt ${attempts[part.id]}/${MAX_ATTEMPTS_PER_PART} (${elapsed}s elapsed) — "${part.text.substring(0, 40)}..."`);
             
             try {
-                const result = await processPart(page, part);
+                const result = await processPart(page, part, page.section16B);
                 completed.add(part.id);
                 console.log(`   ✅ part_${part.id}.wav (${(result.size / 1024).toFixed(1)} KB) — ${completed.size}/${parts.length} done`);
                 
@@ -248,7 +242,9 @@ console.log('');
                     
                     // Re-setup page for next attempt
                     try {
-                        page = await setupPage();
+                        const setup = await setupPage();
+                        page = setup.page;
+                        page.section16B = setup.section16B;
                     } catch (e) {
                         console.log(`   ❌ Page re-setup failed: ${e.message}`);
                         page = null;
