@@ -1,9 +1,9 @@
 {
-  "voice": "Sad (IE, m)",
+  "voice": "voice-donations/ spanish-limaperu_enhanced.wav",
   "parts": [
     {
-      "id": 1,
-      "text": "Have you ever noticed how your mind refuses to stay quiet replaying conversations moments"
+      "id": 5,
+      "text": "Y lo que aprendió en ese camino no fue optimismo ingenuo ni fe ciega en la bondad humana — fue algo mucho más valioso y mucho más raro: aprendió a leer a las personas por lo que hacen cuando nadie las observa, no por lo que dicen cuando quieren impresionar. Teodora observó desde muy joven un patrón que se repetía con una exactitud aterradora. Los mismos hombres que le juraban devoción en la noche la negaban en público al amanecer."
     }
   ]
 }
